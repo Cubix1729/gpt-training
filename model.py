@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.fucntional as F
+import torch.nn.functional as F
 import inspect
 
 
