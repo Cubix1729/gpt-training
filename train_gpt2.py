@@ -19,7 +19,7 @@ from hellaswag import (
     iterate_examples,
     get_most_likely_row
 )
-from model import GPT
+from model import GPT, GPTConfig
 
 # Tokenization and data loading dependencies
 import tiktoken
