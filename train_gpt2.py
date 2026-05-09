@@ -11,7 +11,6 @@ torchrun --standalone --nproc_per_node=8 train_gpt2.py
 import os
 import math
 import time
-from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
