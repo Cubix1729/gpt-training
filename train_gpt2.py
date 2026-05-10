@@ -38,7 +38,7 @@ parser.add_argument(
 parser.add_argument("--micro_batch", type=int, help="The size of the effective batches", default=64)
 parser.add_argument("--max_lr", type=float, help="The maximum learning rate for the training schedule", default=6e-4)
 parser.add_argument("--warmup_steps", type=int, help="The number of warmup steps to perform", default=715)
-parser.add_argument("--compile", type=bool, help="Whether to compile the model", default=True)
+parser.add_argument("--compile", action=argparse.BooleanOptionalAction, help="Whether to compile the model")
 args = parser.parse_args()
 
 
@@ -135,16 +135,12 @@ optimizer = raw_model.configure_optimizers(
     master_process=master_process
 )
 
-print("Created optimizer")
-
 # Create the log directory we will write checkpoints to and log to
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, f"log.txt")
 with open(log_file, "w") as f:  # open for writing to clear the file
     pass
-
-print("Starting training")
 
 for step in range(max_steps):
     t0 = time.time()
