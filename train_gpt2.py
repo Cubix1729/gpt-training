@@ -70,7 +70,7 @@ else:
         device = "cuda"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = "mps"
-    print(f"using device: {device}")
+    print(f"Using device: {device}")
 
 # Added after video, pytorch can be serious about it's device vs. device_type distinction
 device_type = "cuda" if device.startswith("cuda") else "cpu"
@@ -87,7 +87,7 @@ T = 1024  # sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, "make sure total_batch_size is divisible by B * T * ddp_world_size"
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 if master_process:
-    print(f"total desired batch size: {total_batch_size}")
+    print(f"Total desired batch size: {total_batch_size}")
     print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
 
 train_loader = DataLoaderLite(
@@ -135,12 +135,16 @@ optimizer = raw_model.configure_optimizers(
     master_process=master_process
 )
 
+print("Created optimizer")
+
 # Create the log directory we will write checkpoints to and log to
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, f"log.txt")
 with open(log_file, "w") as f:  # open for writing to clear the file
     pass
+
+print("Starting training")
 
 for step in range(max_steps):
     t0 = time.time()
