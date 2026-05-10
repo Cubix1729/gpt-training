@@ -10,7 +10,7 @@ def load_tokens(filename):
 
 
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes, split):
+    def __init__(self, B, T, process_rank, num_processes, split, master_process=True):
         self.B = B
         self.T = T
         self.process_rank = process_rank
