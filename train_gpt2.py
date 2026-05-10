@@ -39,6 +39,8 @@ parser.add_argument("--micro_batch", type=int, help="The size of the effective b
 parser.add_argument("--max_lr", type=float, help="The maximum learning rate for the training schedule", default=6e-4)
 parser.add_argument("--warmup_steps", type=int, help="The number of warmup steps to perform", default=715)
 parser.add_argument("--compile", action=argparse.BooleanOptionalAction, help="Whether to compile the model")
+parser.add_argument("--resume", action="store_true", help="Whether the training process is resumed")
+parser.add_argument("--resume_checkpoint", help="The path to the checkpoint to use if resuming")
 args = parser.parse_args()
 
 
@@ -97,12 +99,20 @@ val_loader = DataLoaderLite(
     B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val", master_process=master_process
 )
 
+if args.resume:
+    chkpt = torch.load(args.resume_checkpoint)
+    train_loader.load_state_dict(chkpt["dataloader"])
+
 torch.set_float32_matmul_precision('high')  # use TF32
 
 # Create model
 model = GPT(GPTConfig(vocab_size=50304))  # 50304 is a nicer number than 50257
 # model = GPT.from_pretrained("gpt2")  # or init from OpenAI GPT-2
 model.to(device)
+
+if args.resume:
+    model.load_state_dict(chkpt["model"])
+
 use_compile = args.compile  # setting to true disables HellaSwag eval and Generation (TODO fix)
 if use_compile:
     model = torch.compile(model)
@@ -135,6 +145,9 @@ optimizer = raw_model.configure_optimizers(
     master_process=master_process
 )
 
+if args.resume:
+    optimizer.load_state_dict(chkpt["optimizer"])
+
 # Create the log directory we will write checkpoints to and log to
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
@@ -142,7 +155,12 @@ log_file = os.path.join(log_dir, f"log.txt")
 with open(log_file, "w") as f:  # open for writing to clear the file
     pass
 
-for step in range(max_steps):
+if args.resume:
+    step_it = range(chkpt["step"], max_steps)
+else:
+    step_it = range(max_steps)
+
+for step in step_it:
     t0 = time.time()
     last_step = (step == max_steps - 1)
 
@@ -170,10 +188,11 @@ for step in range(max_steps):
                 # Optionally write model checkpoints
                 checkpoint_path = os.path.join(log_dir, f"model_{step:05d}.pt")
                 checkpoint = {
-                    'model': raw_model.state_dict(),
-                    'config': raw_model.config,
-                    'step': step,
-                    'val_loss': val_loss_accum.item()
+                    "model": raw_model.state_dict(),
+                    "step": step,
+                    "val_loss": val_loss_accum.item(),
+                    "optimizer": optimizer.state_dict(),
+                    "dataloader": train_loader.state_dict()
                 }
                 # You might also want to add optimizer.state_dict() and
                 # rng seeds etc., if you wanted to more exactly resume training
@@ -250,7 +269,7 @@ for step in range(max_steps):
 
     # Do one step of the optimization
     model.train()
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
     loss_accum = 0.0
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()

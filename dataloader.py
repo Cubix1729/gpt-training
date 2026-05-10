@@ -16,6 +16,7 @@ class DataLoaderLite:
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
+        self.split = split
         assert split in {'train', 'val'}
 
         # Get the shard filenames
@@ -35,6 +36,17 @@ class DataLoaderLite:
         self.current_shard = 0
         self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position = self.B * self.T * self.process_rank
+
+    def state_dict(self):
+        return {
+            "current_shard": self.current_shard,
+            "current_position": self.current_position,
+        }
+
+    def load_state_dict(self, state):
+        self.current_shard = state["current_shard"]
+        self.tokens = load_tokens(self.shards[self.current_shard])
+        self.current_position = state["current_position"] + self.B * self.T * self.process_rank
 
     def next_batch(self):
         B, T = self.B, self.T
