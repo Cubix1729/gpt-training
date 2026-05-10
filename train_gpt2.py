@@ -22,11 +22,24 @@ from hellaswag import (
 )
 from model import GPT, GPTConfig
 from dataloader import DataLoaderLite
+import argparse
 
 # DDP dependencies
 from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
+
+
+parser = argparse.ArgumentParser(description="GPT training script")
+parser.add_argument("--num_steps", type=int, help="The number of param update steps to perform", default=19073)
+parser.add_argument(
+    "--batch_size", type=int, help="The total number of tokens to process during one step (includes gradient accumulation)", default=2**19
+)
+parser.add_argument("--micro_batch", type=int, help="The size of the effective batches", default=64)
+parser.add_argument("--max_lr", type=float, help="The maximum learning rate for the training schedule", default=6e-4)
+parser.add_argument("--warmup_steps", type=int, help="The number of warmup steps to perform", default=715)
+parser.add_argument("--compile", type=bool, help="Whether to compile the model", default=True)
+args = parser.parse_args()
 
 
 # -----------------------------------------------------------------------------
@@ -68,8 +81,8 @@ if torch.cuda.is_available():
 
 enc = tiktoken.get_encoding("gpt2")
 
-total_batch_size = 524288  # 2**19, ~0.5M, in number of tokens
-B = 64  # micro batch size
+total_batch_size = args.batch_size  # defaults to 2**19, ~0.5M, in number of tokens
+B = args.micro_batch  # micro batch size, defaults to 64
 T = 1024  # sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, "make sure total_batch_size is divisible by B * T * ddp_world_size"
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
@@ -80,23 +93,23 @@ if master_process:
 train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
 val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val")
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('high')  # use TF32
 
 # Create model
 model = GPT(GPTConfig(vocab_size=50304))  # 50304 is a nicer number than 50257
 # model = GPT.from_pretrained("gpt2")  # or init from OpenAI GPT-2
 model.to(device)
-use_compile = True  # setting to true disables HellaSwag eval and Generation (TODO fix)
+use_compile = args.compile  # setting to true disables HellaSwag eval and Generation (TODO fix)
 if use_compile:
     model = torch.compile(model)
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model  # always contains the "raw" unwrapped model
 
-max_lr = 6e-4
+max_lr = args.max_lr  # defaults to 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 715
-max_steps = 19073 # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
+warmup_steps = args.warmup_steps  # defaults to 715
+max_steps = args.num_steps  # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
 def get_lr(it):
     # 1) Linear warmup for warmup_iters steps
     if it < warmup_steps:
