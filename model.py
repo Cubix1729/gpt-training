@@ -69,26 +69,28 @@ class RotaryPosEncoding(nn.Module):
         self.dim = config.n_embd // config.n_head
         inv_freq = 1.0 / (10000 ** (torch.arange(0, self.dim, 2).float() / self.dim))
         self.register_buffer("inv_freq", inv_freq)
-        
-        # Pre-calculate for the entire block size
+
+        # Pre-calculate for the entire block size (e.g. 1024)
         t = torch.arange(config.block_size).float()
         freqs = torch.outer(t, inv_freq)
+        # Buffers are saved with the model and moved to GPU automatically
         self.register_buffer("cos_cached", freqs.cos()[None, None, :, :])
         self.register_buffer("sin_cached", freqs.sin()[None, None, :, :])
 
     def forward(self, q, k):
         T = q.shape[2]
+        # Slice the pre-computed cache to the current sequence length T
         cos = self.cos_cached[:, :, :T, :]
         sin = self.sin_cached[:, :, :T, :]
         return self.apply_rotary_emb(q, cos, sin), self.apply_rotary_emb(k, cos, sin)
 
-    def apply_rotary_emb(self, x):
+    def apply_rotary_emb(self, x, cos, sin):
         # x: (B, nh, T, hs)
-        cos, sin = self.cos_cached, self.sin_cached
+        # cos/sin: (1, 1, T, hs//2)
         d = x.shape[-1] // 2
         x1 = x[..., :d]
         x2 = x[..., d:]
-        
+
         # Standard RoPE rotation formula
         y1 = x1 * cos - x2 * sin
         y2 = x1 * sin + x2 * cos
