@@ -43,10 +43,14 @@ class RotaryPosEncoding(nn.Module):
         self.register_buffer("sin_cached", freqs.sin()[None, None, :, :])
 
     def forward(self, q, k):
-        T = q.shape[2]
-        # Slice the pre-computed cache to the current sequence length T
-        cos = self.cos_cached[:, :, :T, :]
-        sin = self.sin_cached[:, :, :T, :]
+        # Instead of T = q.shape[2] (an int)
+        # We use the actual size of the tensor in a way that remains a 'tensor'
+        t_size = torch.tensor(q.shape[2], device=q.device) 
+        
+        # Slice using the tensor value
+        cos = self.cos_cached[:, :, :t_size, :]
+        sin = self.sin_cached[:, :, :t_size, :]
+        
         return self.apply_rotary_emb(q, cos, sin), self.apply_rotary_emb(k, cos, sin)
 
     def apply_rotary_emb(self, x, cos, sin):
@@ -185,6 +189,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    @torch.compiler.disable
     def forward(self, idx, targets=None):
         # idx is of shape (B, T)
         B, T = idx.size()
