@@ -28,41 +28,6 @@ class GPTConfig:
 OrigGPT124MConfig = GPTConfig(use_swiglu=False, use_rope=False, use_rmsnorm=False)
 
 
-class RotaryPosEncoding(nn.Module):  # taken from github.com/Om-Alve/smolGPT
-    def __init__(self, config):
-        super().__init__()
-        self.dim = config.n_embd
-        self.inv_freq = None
-        self.seq_len_cached = None
-        self.cos_cached = None
-        self.sin_cached = None
-
-    def forward(self, q, k):
-        seq_len = q.shape[1]
-        if seq_len != self.seq_len_cached:
-            self.inv_freq = 1.0 / (
-                10000 ** (torch.arange(0, self.dim, 2, device=q.device) / self.dim)
-            )
-            self.seq_len_cached = seq_len
-            t = torch.arange(seq_len, device=q.device).type_as(self.inv_freq)
-            freqs = torch.outer(t, self.inv_freq)
-            self.cos_cached = freqs.cos().type_as(q)
-            self.sin_cached = freqs.sin().type_as(q)
-        cos, sin = self.cos_cached[None, :, None, :], self.sin_cached[None, :, None, :]
-        q_ = self.apply_rotary_emb(q, cos, sin)
-        k_ = self.apply_rotary_emb(k, cos, sin)
-        return q_, k_
-
-    def apply_rotary_emb(self, x, cos, sin):
-        assert x.ndim == 4  # multihead attention
-        d = x.shape[3] // 2
-        x1 = x[..., :d]
-        x2 = x[..., d:]
-        y1 = x1 * cos + x2 * sin
-        y2 = x1 * (-sin) + x2 * cos
-        return torch.cat([y1, y2], 3).type_as(x)
-
-
 class RotaryPosEncoding(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -220,6 +185,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    @torch.compiler.disable
     def forward(self, idx, targets=None):
         # idx is of shape (B, T)
         B, T = idx.size()
