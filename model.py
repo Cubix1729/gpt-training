@@ -9,39 +9,130 @@ import inspect
 
 @dataclass
 class GPTConfig:
-    block_size: int = 1024 # max sequence length
-    vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endoftext|> token
-    n_layer: int = 12 # number of layers
-    n_head: int = 12 # number of heads
-    n_embd: int = 768 # embedding dimension
+    """
+    GPT configuration class
+
+    Default is the GPT-2 124M configuration, with RoPE, RMSNorm and SwiGLU allowed
+    """
+
+    block_size: int = 1024  # max sequence length
+    vocab_size: int = 50257  # number of tokens: 50,000 BPE merges + 256 bytes tokens + 1 <|endoftext|> token
+    n_layer: int = 12  # number of layers
+    n_head: int = 12  # number of heads
+    n_embd: int = 768  # embedding dimension
+    use_swiglu: bool = True  # whether to use SwiGLU instead of GELU
+    use_rope: bool = True  # whether to use RoPE instead of learning positional embeddings
+    use_rmsnorm: bool = True  # whether to use RMSNorm instead of Layer Normalization
+
+
+OrigGPT124MConfig = GPTConfig(use_swiglu=False, use_rope=False, use_rmsnorm=False)
+
+
+class RotaryPosEncoding(nn.Module):  # taken from github.com/Om-Alve/smolGPT
+    def __init__(self, config):
+        super().__init__()
+        self.dim = config.n_embd
+        self.inv_freq = None
+        self.seq_len_cached = None
+        self.cos_cached = None
+        self.sin_cached = None
+
+    def forward(self, q, k):
+        seq_len = q.shape[1]
+        if seq_len != self.seq_len_cached:
+            self.inv_freq = 1.0 / (
+                10000 ** (torch.arange(0, self.dim, 2, device=q.device) / self.dim)
+            )
+            self.seq_len_cached = seq_len
+            t = torch.arange(seq_len, device=q.device).type_as(self.inv_freq)
+            freqs = torch.outer(t, self.inv_freq)
+            self.cos_cached = freqs.cos().type_as(q)
+            self.sin_cached = freqs.sin().type_as(q)
+        cos, sin = self.cos_cached[None, :, None, :], self.sin_cached[None, :, None, :]
+        q_ = self.apply_rotary_emb(q, cos, sin)
+        k_ = self.apply_rotary_emb(k, cos, sin)
+        return q_, k_
+
+    def apply_rotary_emb(self, x, cos, sin):
+        assert x.ndim == 4  # multihead attention
+        d = x.shape[3] // 2
+        x1 = x[..., :d]
+        x2 = x[..., d:]
+        y1 = x1 * cos + x2 * sin
+        y2 = x1 * (-sin) + x2 * cos
+        return torch.cat([y1, y2], 3).type_as(x)
+
+
+class RotaryPosEncoding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        # hs = n_embd // n_head (usually 64)
+        self.dim = config.n_embd // config.n_head
+
+        # Precompute the inverse frequencies
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, self.dim, 2).float() / self.dim))
+        self.register_buffer("inv_freq", inv_freq)
+        self.seq_len_cached = None
+        self.cos_cached = None
+        self.sin_cached = None
+
+    def forward(self, q, k):
+        # q, k shape: (B, nh, T, hs)
+        T = q.shape[2]
+        if T != self.seq_len_cached:
+            self.seq_len_cached = T
+            t = torch.arange(T, device=q.device).type_as(self.inv_freq)
+            freqs = torch.outer(t, self.inv_freq) # (T, hs//2)
+
+            # We need to match the (B, nh, T, hs) shape for broadcasting
+            # The shapes here will be (1, 1, T, hs//2)
+            self.cos_cached = freqs.cos()[None, None, :, :]
+            self.sin_cached = freqs.sin()[None, None, :, :]
+
+        return self.apply_rotary_emb(q), self.apply_rotary_emb(k)
+
+    def apply_rotary_emb(self, x):
+        # x: (B, nh, T, hs)
+        cos, sin = self.cos_cached, self.sin_cached
+        d = x.shape[-1] // 2
+        x1 = x[..., :d]
+        x2 = x[..., d:]
+        
+        # Standard RoPE rotation formula
+        y1 = x1 * cos - x2 * sin
+        y2 = x1 * sin + x2 * cos
+        return torch.cat([y1, y2], dim=-1).type_as(x)
 
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
+        self.rope = RotaryPosEncoding(config) if config.use_rope else None
+        # Key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
-        # output projection
+        # Output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
         self.c_proj.NANOGPT_SCALE_INIT = 1
-        # regularization
+        # Regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
 
     def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
+        # Calculate query, key, values for all heads in batch and move head forward to be the batch dim
         # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
         # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-        # output projection
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
+        if self.rope is not None:
+            q, k = self.rope(q, k)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # flash attention
+        y = y.transpose(1, 2).contiguous().view(B, T, C)  # re-assemble all head outputs side by side
+        # Output projection
         y = self.c_proj(y)
         return y
 
@@ -61,13 +152,34 @@ class MLP(nn.Module):
         return x
 
 
+class SwiGLU(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        hidden_dim = int((8 * config.n_embd) / 3)
+        self.fc1 = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.fc2 = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.fc3 = nn.Linear(hidden_dim, config.n_embd, bias=False)
+
+    def forward(self, x):
+        gate = F.silu(self.fc2(x))
+        data = self.fc1(x)
+        return self.fc3(data * gate)
+
+
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd)
+        if not config.use_rmsnorm:
+            self.ln_1 = nn.LayerNorm(config.n_embd)
+            self.ln_2 = nn.LayerNorm(config.n_embd)
+        else:
+            self.ln_1 = nn.RMSNorm(config.n_embd)
+            self.ln_2 = nn.RMSNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
+        if config.use_swiglu:
+            self.mlp = SwiGLU(config)
+        else:
+            self.mlp = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -80,18 +192,28 @@ class GPT(nn.Module):
         super().__init__()
         self.config = config
 
+        if config.use_rmsnorm:
+            ln_f = nn.RMSNorm(config.n_embd)
+        else:
+            ln_f = nn.LayerNorm(config.n_embd)
+
+        if config.use_rope:
+            wpe = nn.Identity()
+        else:
+            wpe = nn.Embedding(config.block_size, config.n_embd)
+
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            wpe = wpe,
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f = nn.LayerNorm(config.n_embd),
+            ln_f = ln_f,
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-        # weight sharing scheme
+        # Weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
 
-        # init params
+        # Parameter initialization
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -109,15 +231,18 @@ class GPT(nn.Module):
         # idx is of shape (B, T)
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
-        # forward the token and posisition embeddings
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # shape (T)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (B, T, n_embd)
-        x = tok_emb + pos_emb
-        # forward the blocks of the transformer
+        # Forward the token and posisition embeddings
+        tok_emb = self.transformer.wte(idx)  # token embeddings of shape (B, T, n_embd)
+        if not config.use_rope:
+            pos = torch.arange(0, T, dtype=torch.long, device=idx.device)  # shape (T)
+            pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (T, n_embd)
+            x = tok_emb + pos_emb
+        else:
+            x = tok_emb
+        # Forward the blocks of the transformer
         for block in self.transformer.h:
             x = block(x)
-        # forward the final layernorm and the classifier
+        # Forward the final layernorm and the classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
         loss = None
@@ -139,25 +264,28 @@ class GPT(nn.Module):
             'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280), # 774M params
             'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600), # 1558M params
         }[model_type]
-        config_args['vocab_size'] = 50257 # always 50257 for GPT model checkpoints
-        config_args['block_size'] = 1024 # always 1024 for GPT model checkpoints
-        # create a from-scratch initialized minGPT model
+        config_args['vocab_size'] = 50257  # always 50257 for GPT model checkpoints
+        config_args['block_size'] = 1024  # always 1024 for GPT model checkpoints
+        config_args['use_rope'] = False
+        config_args['use_swiglu'] = False
+        config_args['use_rmsnorm'] = False
+        # Create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
         model = GPT(config)
         sd = model.state_dict()
         sd_keys = sd.keys()
         sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, not a param
 
-        # init a huggingface/transformers model
+        # Init a huggingface/transformers model
         model_hf = GPT2LMHeadModel.from_pretrained(model_type)
         sd_hf = model_hf.state_dict()
 
-        # copy while ensuring all of the parameters are aligned and match in names and shapes
+        # Copy while ensuring all of the parameters are aligned and match in names and shapes
         sd_keys_hf = sd_hf.keys()
         sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these, just a buffer
         sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # same, just the mask (buffer)
         transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
-        # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
+        # Basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
         # this means that we have to transpose these weights when we import them
         assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
         for k in sd_keys_hf:
@@ -175,10 +303,10 @@ class GPT(nn.Module):
         return model
 
     def configure_optimizers(self, weight_decay, learning_rate, device_type, master_process=True):
-        # start with all of the candidate parameters (that require grad)
+        # Start with all of the candidate parameters (that require grad)
         param_dict = {pn: p for pn, p in self.named_parameters()}
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
-        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
+        # Create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
         # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
