@@ -199,7 +199,7 @@ for step in step_it:
                 torch.save(checkpoint, checkpoint_path)
 
     # Once in a while, we evaluate hellaswag
-    if (step % 250 == 0 or last_step) and (not use_compile):
+    if (step % 100 == 0 or last_step):
         num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples("val")):
@@ -232,7 +232,7 @@ for step in step_it:
                 f.write(f"{step} hella {acc_norm:.4f}\n")
 
     # Once in a while generate from the model (except step 0, which is noise)
-    if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+    if ((step > 0 and step % 100 == 0) or last_step):
         model.eval()
         num_return_sequences = 4
         max_length = 32
