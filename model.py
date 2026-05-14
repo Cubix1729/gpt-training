@@ -66,30 +66,21 @@ class RotaryPosEncoding(nn.Module):  # taken from github.com/Om-Alve/smolGPT
 class RotaryPosEncoding(nn.Module):
     def __init__(self, config):
         super().__init__()
-        # hs = n_embd // n_head (usually 64)
         self.dim = config.n_embd // config.n_head
-
-        # Precompute the inverse frequencies
         inv_freq = 1.0 / (10000 ** (torch.arange(0, self.dim, 2).float() / self.dim))
         self.register_buffer("inv_freq", inv_freq)
-        self.seq_len_cached = None
-        self.cos_cached = None
-        self.sin_cached = None
+        
+        # Pre-calculate for the entire block size
+        t = torch.arange(config.block_size).float()
+        freqs = torch.outer(t, inv_freq)
+        self.register_buffer("cos_cached", freqs.cos()[None, None, :, :])
+        self.register_buffer("sin_cached", freqs.sin()[None, None, :, :])
 
     def forward(self, q, k):
-        # q, k shape: (B, nh, T, hs)
         T = q.shape[2]
-        if T != self.seq_len_cached:
-            self.seq_len_cached = T
-            t = torch.arange(T, device=q.device).type_as(self.inv_freq)
-            freqs = torch.outer(t, self.inv_freq) # (T, hs//2)
-
-            # We need to match the (B, nh, T, hs) shape for broadcasting
-            # The shapes here will be (1, 1, T, hs//2)
-            self.cos_cached = freqs.cos()[None, None, :, :]
-            self.sin_cached = freqs.sin()[None, None, :, :]
-
-        return self.apply_rotary_emb(q), self.apply_rotary_emb(k)
+        cos = self.cos_cached[:, :, :T, :]
+        sin = self.sin_cached[:, :, :T, :]
+        return self.apply_rotary_emb(q, cos, sin), self.apply_rotary_emb(k, cos, sin)
 
     def apply_rotary_emb(self, x):
         # x: (B, nh, T, hs)
