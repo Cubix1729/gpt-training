@@ -116,6 +116,7 @@ if args.resume:
 use_compile = args.compile
 if use_compile:
     model = torch.compile(model)
+    torch._dynamo.config.optimize_ddp = False
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model  # always contains the "raw" unwrapped model
