@@ -33,34 +33,31 @@ class RotaryPosEncoding(nn.Module):
         super().__init__()
         self.dim = config.n_embd // config.n_head
         inv_freq = 1.0 / (10000 ** (torch.arange(0, self.dim, 2).float() / self.dim))
-        self.register_buffer("inv_freq", inv_freq)
-
-        # Pre-calculate for the entire block size (e.g. 1024)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        
+        # Pre-calculate for the entire block size
         t = torch.arange(config.block_size).float()
         freqs = torch.outer(t, inv_freq)
-        # Buffers are saved with the model and moved to GPU automatically
+        # Register as buffers so they move to GPU and are seen by the compiler
         self.register_buffer("cos_cached", freqs.cos()[None, None, :, :])
         self.register_buffer("sin_cached", freqs.sin()[None, None, :, :])
 
     def forward(self, q, k):
-        # Instead of T = q.shape[2] (an int)
-        # We use the actual size of the tensor in a way that remains a 'tensor'
-        t_size = torch.tensor(q.shape[2], device=q.device) 
+        # Key change: Use q.size(-2) to get T as a SymInt
+        T = q.size(-2)
         
-        # Slice using the tensor value
-        cos = self.cos_cached[:, :, :t_size, :]
-        sin = self.sin_cached[:, :, :t_size, :]
+        # Key change: Use narrow() instead of slicing. 
+        # torch.narrow is much more "compiler-friendly" than [:T] 
+        # because it explicitly communicates the dimension and length.
+        cos = self.cos_cached.narrow(2, 0, T)
+        sin = self.sin_cached.narrow(2, 0, T)
         
         return self.apply_rotary_emb(q, cos, sin), self.apply_rotary_emb(k, cos, sin)
 
     def apply_rotary_emb(self, x, cos, sin):
-        # x: (B, nh, T, hs)
-        # cos/sin: (1, 1, T, hs//2)
         d = x.shape[-1] // 2
-        x1 = x[..., :d]
-        x2 = x[..., d:]
-
-        # Standard RoPE rotation formula
+        # Use the Llama-style half-rotate
+        x1, x2 = x.chunk(2, dim=-1)
         y1 = x1 * cos - x2 * sin
         y2 = x1 * sin + x2 * cos
         return torch.cat([y1, y2], dim=-1).type_as(x)
