@@ -113,7 +113,7 @@ model.to(device)
 if args.resume:
     model.load_state_dict(chkpt["model"])
 
-use_compile = args.compile  # setting to true disables HellaSwag eval and Generation (TODO fix)
+use_compile = args.compile
 if use_compile:
     model = torch.compile(model)
 if ddp:
@@ -212,7 +212,7 @@ for step in step_it:
             mask = mask.to(device)
             # Get the logits
             with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.float16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(tokens)
                 pred_norm = get_most_likely_row(tokens, mask, logits)
             num_total += 1
@@ -245,7 +245,7 @@ for step in step_it:
         while xgen.size(1) < max_length:
             # Forward the model to get the logits
             with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.float16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(xgen) # (B, T, vocab_size)
                 # Take the logits at the last position
                 logits = logits[:, -1, :] # (B, vocab_size)
@@ -277,7 +277,7 @@ for step in step_it:
         # Added after video, this field is also used by the forward pass.
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
-        with torch.autocast(device_type=device_type, dtype=torch.float16):
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
         # We have to scale the loss to account for gradient accumulation,
         # because the gradients just add on each successive backward().
