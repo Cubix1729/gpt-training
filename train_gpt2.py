@@ -36,8 +36,8 @@ parser.add_argument(
     "--batch_size", type=int, help="The total number of tokens to process during one step (includes gradient accumulation)", default=2**19
 )
 parser.add_argument("--micro_batch", type=int, help="The size of the effective batches", default=64)
-parser.add_argument("--max_lr", type=float, help="The maximum learning rate for the training schedule", default=6e-4)
-parser.add_argument("--warmup_steps", type=int, help="The number of warmup steps to perform", default=715)
+parser.add_argument("--max_lr", type=float, help="The maximum learning rate for the training schedule", default=1e-3)
+parser.add_argument("--warmup_steps", type=int, help="The number of warmup steps to perform", default=100)
 parser.add_argument("--compile", action=argparse.BooleanOptionalAction, help="Whether to compile the model")
 parser.add_argument("--resume", action="store_true", help="Whether the training process is resumed")
 parser.add_argument("--resume_checkpoint", help="The path to the checkpoint to use if resuming")
@@ -120,9 +120,9 @@ if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model  # always contains the "raw" unwrapped model
 
-max_lr = args.max_lr  # defaults to 6e-4
+max_lr = args.max_lr  # defaults to 1e-3
 min_lr = max_lr * 0.1
-warmup_steps = args.warmup_steps  # defaults to 715
+warmup_steps = args.warmup_steps  # defaults to 100
 max_steps = args.num_steps  # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
 def get_lr(it):
     # 1) Linear warmup for warmup_iters steps
