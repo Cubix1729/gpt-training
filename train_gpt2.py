@@ -36,8 +36,8 @@ parser.add_argument(
     "--batch_size", type=int, help="The total number of tokens to process during one step (includes gradient accumulation)", default=2**19
 )
 parser.add_argument("--micro_batch", type=int, help="The size of the effective batches", default=64)
-parser.add_argument("--max_lr", type=float, help="The maximum learning rate for the training schedule", default=1e-3)
-parser.add_argument("--warmup_steps", type=int, help="The number of warmup steps to perform", default=100)
+parser.add_argument("--max_lr", type=float, help="The maximum learning rate for the training schedule", default=6e-4)
+parser.add_argument("--warmup_steps", type=int, help="The number of warmup steps to perform", default=200)
 parser.add_argument("--compile", action=argparse.BooleanOptionalAction, help="Whether to compile the model")
 parser.add_argument("--resume", action="store_true", help="Whether the training process is resumed")
 parser.add_argument("--resume_checkpoint", help="The path to the checkpoint to use if resuming")
@@ -121,9 +121,9 @@ if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model  # always contains the "raw" unwrapped model
 
-max_lr = args.max_lr  # defaults to 1e-3
+max_lr = args.max_lr  # defaults to 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = args.warmup_steps  # defaults to 100
+warmup_steps = args.warmup_steps  # defaults to 200
 max_steps = args.num_steps  # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
 def get_lr(it):
     # 1) Linear warmup for warmup_iters steps
@@ -175,7 +175,7 @@ for step in step_it:
             for _ in range(val_loss_steps):
                 x, y = val_loader.next_batch()
                 x, y = x.to(device), y.to(device)
-                with torch.autocast(device_type=device_type, dtype=torch.float16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(x, y)
                 loss = loss / val_loss_steps
                 val_loss_accum += loss.detach()
@@ -185,7 +185,7 @@ for step in step_it:
             print(f"validation loss: {val_loss_accum.item():.4f}")
             with open(log_file, "a") as f:
                 f.write(f"{step} val {val_loss_accum.item():.4f}\n")
-            if step > 0 and (step % 5000 == 0 or last_step):
+            if step > 0 and (step % 2500 == 0 or last_step):
                 # Optionally write model checkpoints
                 checkpoint_path = os.path.join(log_dir, f"model_{step:05d}.pt")
                 checkpoint = {
@@ -200,7 +200,7 @@ for step in step_it:
                 torch.save(checkpoint, checkpoint_path)
 
     # Once in a while, we evaluate hellaswag
-    if step % 100 == 0 or last_step:
+    if step % 250 == 0 or last_step:
         num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples("val")):
@@ -213,7 +213,7 @@ for step in step_it:
             mask = mask.to(device)
             # Get the logits
             with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.float16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(tokens)
                 pred_norm = get_most_likely_row(tokens, mask, logits)
             num_total += 1
@@ -233,7 +233,7 @@ for step in step_it:
                 f.write(f"{step} hella {acc_norm:.4f}\n")
 
     # Once in a while generate from the model (except step 0, which is noise)
-    if (step > 0 and step % 100 == 0) or last_step:
+    if (step > 0 and step % 250 == 0) or last_step:
         model.eval()
         num_return_sequences = 4
         max_length = 32
@@ -246,7 +246,7 @@ for step in step_it:
         while xgen.size(1) < max_length:
             # Forward the model to get the logits
             with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.float16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(xgen) # (B, T, vocab_size)
                 # Take the logits at the last position
                 logits = logits[:, -1, :] # (B, vocab_size)
@@ -278,7 +278,7 @@ for step in step_it:
         # Added after video, this field is also used by the forward pass
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
-        with torch.autocast(device_type=device_type, dtype=torch.float16):
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
         # We have to scale the loss to account for gradient accumulation,
         # because the gradients just add on each successive backward().

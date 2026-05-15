@@ -20,9 +20,9 @@ class GPTConfig:
     n_layer: int = 12  # number of layers
     n_head: int = 12  # number of heads
     n_embd: int = 768  # embedding dimension
-    use_swiglu: bool = False  # whether to use SwiGLU instead of GELU
-    use_rope: bool = False  # whether to use RoPE instead of learning positional embeddings
-    use_rmsnorm: bool = False  # whether to use RMSNorm instead of Layer Normalization
+    use_swiglu: bool = True  # whether to use SwiGLU instead of GELU
+    use_rope: bool = True  # whether to use RoPE instead of learning positional embeddings
+    use_rmsnorm: bool = True  # whether to use RMSNorm instead of Layer Normalization
 
 
 OrigGPT124MConfig = GPTConfig(use_swiglu=False, use_rope=False, use_rmsnorm=False)
