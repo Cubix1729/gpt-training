@@ -20,9 +20,9 @@ class GPTConfig:
     n_layer: int = 12  # number of layers
     n_head: int = 12  # number of heads
     n_embd: int = 768  # embedding dimension
-    use_swiglu: bool = True  # whether to use SwiGLU instead of GELU
-    use_rope: bool = True  # whether to use RoPE instead of learning positional embeddings
-    use_rmsnorm: bool = True  # whether to use RMSNorm instead of Layer Normalization
+    use_swiglu: bool = False  # whether to use SwiGLU instead of GELU
+    use_rope: bool = False  # whether to use RoPE instead of learning positional embeddings
+    use_rmsnorm: bool = False  # whether to use RMSNorm instead of Layer Normalization
 
 
 OrigGPT124MConfig = GPTConfig(use_swiglu=False, use_rope=False, use_rmsnorm=False)
@@ -34,7 +34,7 @@ class RotaryPosEncoding(nn.Module):
         self.dim = config.n_embd // config.n_head
         inv_freq = 1.0 / (10000 ** (torch.arange(0, self.dim, 2).float() / self.dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
-        
+
         # Pre-calculate for the entire block size
         t = torch.arange(config.block_size).float()
         freqs = torch.outer(t, inv_freq)
@@ -45,13 +45,10 @@ class RotaryPosEncoding(nn.Module):
     def forward(self, q, k):
         # Key change: Use q.size(-2) to get T as a SymInt
         T = q.size(-2)
-        
-        # Key change: Use narrow() instead of slicing. 
-        # torch.narrow is much more "compiler-friendly" than [:T] 
-        # because it explicitly communicates the dimension and length.
-        cos = self.cos_cached.narrow(2, 0, T)
-        sin = self.sin_cached.narrow(2, 0, T)
-        
+
+        cos = self.cos_cached.narrow(2, 0, T).to(dtype=q.dtype)
+        sin = self.sin_cached.narrow(2, 0, T).to(dtype=q.dtype)
+
         return self.apply_rotary_emb(q, cos, sin), self.apply_rotary_emb(k, cos, sin)
 
     def apply_rotary_emb(self, x, cos, sin):
