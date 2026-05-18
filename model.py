@@ -115,6 +115,7 @@ class SwiGLU(nn.Module):
         self.fc1 = nn.Linear(config.n_embd, hidden_dim, bias=False)
         self.fc2 = nn.Linear(config.n_embd, hidden_dim, bias=False)
         self.fc3 = nn.Linear(hidden_dim, config.n_embd, bias=False)
+        self.fc3.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
         gate = F.silu(self.fc2(x))
