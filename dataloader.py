@@ -1,4 +1,5 @@
 import numpy as np
+import random
 import torch
 import os
 
@@ -23,7 +24,9 @@ class DataLoaderLite:
         data_root = "edu_fineweb10B"
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
-        shards = sorted(shards)
+        # Shuffle the shards, with a fixed seed
+        random.seed(42)
+        random.shuffle(shards)
         shards = [os.path.join(data_root, s) for s in shards]
         self.shards = shards
         assert len(shards) > 0, f"No shards found for split {split}"
